@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf8 -*-
 import argparse
+import collections
 import json
 import logging
 import multiprocessing
@@ -221,7 +222,7 @@ def write_mfe3primer_cache(args, name, cache):
         ]
 
         handle.write("\t".join(header) + "\n")
-        for (fwd, rev), it in sorted(cache.items()):
+        for (fwd, rev), it in cache.items():
             prod, dimers, hairp = it["qc"]
             amplicons = it["amplicons"]
             assert len(amplicons) == prod
@@ -232,7 +233,7 @@ def write_mfe3primer_cache(args, name, cache):
 
 
 def read_mfe3primer_cache(args, name):
-    cache = {}
+    cache = collections.OrderedDict()
     filepath = args.output_folder / "mfeprimer3" / f"{name}.tsv"
     filepath.parent.mkdir(parents=True, exist_ok=True)
     if filepath.exists():
@@ -273,7 +274,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
 
                 cached_qc_and_amps = cache.get((forward_primer, reverse_primer))
                 if cached_qc_and_amps is not None:
-                    if (1, 0, 0) <= cached_qc_and_amps["qc"] <= best_qc:
+                    if (1, 0, 0) <= cached_qc_and_amps["qc"] < best_qc:
                         best_qc = cached_qc_and_amps["qc"]
                         best_pair = {
                             "forward": forward_primer,
