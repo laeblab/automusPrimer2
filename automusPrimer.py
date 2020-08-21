@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf8 -*-
 import argparse
+import json
 import logging
 import multiprocessing
 import re
@@ -44,7 +45,6 @@ COMPLEMENT = {
     "n": "n",
 }
 
-RE_NUM_AMPLICONS = re.compile(rb"Descriptions of \[\s*(\d+)\s*\] potential amplicons")
 RE_NUM_DIMERS = re.compile(rb"Dimer List \(\s*(\d+)\s*\)")
 RE_NUM_HAIRPINS = re.compile(rb"Hairpin List \(\s*(\d+)\s*\)")
 
@@ -133,6 +133,48 @@ def run_and_parse_mfeprimer3(log, command, regexp):
     return int(match.groups()[0])
 
 
+def run_and_collect_mfeprimer3_amplicons(log, args, fastapath, outpath):
+    command = [
+        args.mfeprimer3,
+        "--db",
+        args.fasta,
+        "--in",
+        fastapath,
+        "--json",
+        "--out",
+        outpath / "out",
+    ]
+
+    log.debug("Running command %s", [str(value) for value in command])
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    stdout, stderr = process.communicate()
+    log_output(log.debug, "[mfeprimer3] ", stdout)
+    log_output(log.error, "[mfeprimer3] ", stderr)
+
+    if process.returncode:
+        log.error("Failed to run mfeprimer3 (returncode = %i)", process.returncode)
+        None
+
+    with (outpath / "out.json").open() as handle:
+        data = json.load(handle)
+
+    # GuideRNAs may target duplicated regions / regions with alternative scaffolds;
+    # in that case we do not wish to exclude primer-pairs that amplify both regions.
+    # TODO: Handle very similar (identical length) amplicons
+    # TODO: Prioritize globally unique amplicons if possible
+    amplicons = set()
+    for amplicon in data["AmpList"]:
+        amplicons.add(amplicon["P"]["Seq"]["Seq"].upper())
+
+    return frozenset(amplicons)
+
+
 def run_mfeprimer3(params):
     log = logging.getLogger("run_mfeprimer3")
     args, candidate = params
@@ -140,26 +182,28 @@ def run_mfeprimer3(params):
     forward_primer = candidate["fwd_primer"]
     reverse_primer = candidate["rev_primer"]
 
-    with tempfile.NamedTemporaryFile("wt") as handle:
-        handle.write(f">forward\n{forward_primer}\n")
-        handle.write(f">reverse\n{reverse_primer}\n")
-        handle.flush()
+    with tempfile.TemporaryDirectory() as tempdir:
+        temppath = Path(tempdir)
 
-        amplicons = run_and_parse_mfeprimer3(
-            log,
-            [args.mfeprimer3, "--db", args.fasta, "--in", handle.name],
-            RE_NUM_AMPLICONS,
+        fastapath = temppath / "in.fasta"
+        with fastapath.open("wt") as handle:
+            handle.write(f">forward\n{forward_primer}\n")
+            handle.write(f">reverse\n{reverse_primer}\n")
+
+        amplicons = run_and_collect_mfeprimer3_amplicons(
+            log=log, args=args, fastapath=fastapath, outpath=temppath
         )
 
         dimers = run_and_parse_mfeprimer3(
-            log, [args.mfeprimer3, "dimer", "--in", handle.name], RE_NUM_DIMERS,
+            log, [args.mfeprimer3, "dimer", "--in", fastapath], RE_NUM_DIMERS,
         )
 
         hairpins = run_and_parse_mfeprimer3(
-            log, [args.mfeprimer3, "hairpin", "--in", handle.name], RE_NUM_HAIRPINS,
+            log, [args.mfeprimer3, "hairpin", "--in", fastapath], RE_NUM_HAIRPINS,
         )
 
-    candidate["qc"] = (amplicons, dimers, hairpins)
+    candidate["qc"] = (len(amplicons), dimers, hairpins)
+    candidate["amplicons"] = amplicons
 
     return candidate
 
@@ -168,11 +212,23 @@ def write_mfe3primer_cache(args, name, cache):
     filepath = args.output_folder / "mfeprimer3" / f"{name}.tsv"
 
     with filepath.open("wt") as handle:
-        header = ["Forward Primer", "Reverse Primer", "Products", "Dimers", "Hairpins"]
-        handle.write("\t".join(header) + "\n")
+        header = [
+            "Forward Primer",
+            "Reverse Primer",
+            "Dimers",
+            "Hairpins",
+            "Amplicons",
+        ]
 
-        for (fwd, rev), (prod, dimers, hairp) in sorted(cache.items()):
-            handle.write("%s\t%s\t%s\t%s\t%s\n" % (fwd, rev, prod, dimers, hairp))
+        handle.write("\t".join(header) + "\n")
+        for (fwd, rev), it in sorted(cache.items()):
+            prod, dimers, hairp = it["qc"]
+            amplicons = it["amplicons"]
+            assert len(amplicons) == prod
+
+            handle.write(
+                "%s\t%s\t%s\t%s\t%s\n" % (fwd, rev, dimers, hairp, ";".join(amplicons))
+            )
 
 
 def read_mfe3primer_cache(args, name):
@@ -183,12 +239,14 @@ def read_mfe3primer_cache(args, name):
         for row in read_table(filepath):
             forward_primer = row["Forward Primer"].upper()
             reverse_primer = row["Reverse Primer"].upper()
+            amplicons = frozenset(row["Amplicons"].split(";"))
+            dimers = int(row["Dimers"])
+            hairpins = int(row["Hairpins"])
 
-            cache[(forward_primer, reverse_primer)] = (
-                int(row["Products"]),
-                int(row["Dimers"]),
-                int(row["Hairpins"]),
-            )
+            cache[(forward_primer, reverse_primer)] = {
+                "qc": (len(amplicons), dimers, hairpins),
+                "amplicons": amplicons,
+            }
 
     return cache
 
@@ -213,10 +271,16 @@ def find_best_primer_pairs(args, name, primer_pairs):
                 forward_primer = fwd_primers[fwd_depth]
                 reverse_primer = rev_primers[depth - fwd_depth]
 
-                cached_qc = cache.get((forward_primer, reverse_primer))
-                if cached_qc is not None and (1, 0, 0) <= cached_qc <= best_qc:
-                    best_pair = (forward_primer, reverse_primer, cached_qc)
-                    best_qc = cached_qc
+                cached_qc_and_amps = cache.get((forward_primer, reverse_primer))
+                if cached_qc_and_amps is not None:
+                    if (1, 0, 0) <= cached_qc_and_amps["qc"] <= best_qc:
+                        best_qc = cached_qc_and_amps["qc"]
+                        best_pair = {
+                            "forward": forward_primer,
+                            "reverse": reverse_primer,
+                            "qc": cached_qc_and_amps["qc"],
+                            "amplicons": cached_qc_and_amps["amplicons"],
+                        }
 
                 if (forward_primer, reverse_primer) not in cache:
                     candidates.append(
@@ -231,10 +295,10 @@ def find_best_primer_pairs(args, name, primer_pairs):
                     )
 
     if best_qc == (1, 0, 0):
-        log.info("Found cached f %s, r %s, qc %s", *best_pair)
+        log.info("Found cached f %(forward)s, r %(reverse)s, qc %(qc)s" % best_pair)
         return best_pair
     elif best_pair is not None:
-        log.info("Starting from f %s, r %s, qc %s", *best_pair)
+        log.info("Starting from f %(forward)s, r %(reverse)s, qc %(qc)s" % best_pair)
 
     try:
         with multiprocessing.Pool(args.threads) as pool:
@@ -245,16 +309,26 @@ def find_best_primer_pairs(args, name, primer_pairs):
                 fwd_primer = candidate["fwd_primer"]
                 rev_primer = candidate["rev_primer"]
                 results = candidate["qc"]
+                amplicons = candidate["amplicons"]
 
-                cache[(fwd_primer, rev_primer)] = results
+                cache[(fwd_primer, rev_primer)] = {
+                    "qc": results,
+                    "amplicons": amplicons,
+                }
 
                 log.info("Tested f %s, r %s, qc %s", fwd_primer, rev_primer, results)
+                if (1, 0, 0) <= results < best_qc:
+                    best_pair = {
+                        "forward": fwd_primer,
+                        "reverse": rev_primer,
+                        "qc": results,
+                        "amplicons": amplicons,
+                    }
+                    best_qc = results
+
                 if results == (1, 0, 0):
                     log.info("Found good primer-pair with single PCR product!")
-                    return [fwd_primer, rev_primer, results]
-                elif (1, 0, 0) <= results < best_qc:
-                    best_pair = [fwd_primer, rev_primer, results]
-                    best_qc = results
+                    return best_pair
 
         if best_pair is None:
             log.error("No primer pairs found")
@@ -352,15 +426,17 @@ def pick_primers_for_guide_rna(args, fasta, row, used_primers):
     reverse_primers = [seq for seq in reverse_primers if seq not in used_primers]
     suggested_primer_pairs = forward_primers, reverse_primers
 
-    best_pair = find_best_primer_pairs(args, safe_name, suggested_primer_pairs)
-    if best_pair is None:
+    result = find_best_primer_pairs(args, safe_name, suggested_primer_pairs)
+    if result is None:
         return False
 
-    forward_primer, reverse_primer, qc = best_pair
+    forward_primer = result["forward"]
+    reverse_primer = result["reverse"]
 
     row["Forward Primer"] = forward_primer
     row["Reverse Primer"] = reverse_primer
-    row["Quality Control"] = ":".join(str(value) for value in qc)
+    row["Quality Control"] = ":".join(str(value) for value in result["qc"])
+    row["Predicted Amplicons"] = result["amplicons"]
 
     used_primers.add(forward_primer)
     used_primers.add(reverse_primer)
@@ -571,6 +647,14 @@ def main(argv):
             row["Reverse Primer"] = reverse_complement(row["Reverse Primer"])
             row = [row[key] for key in header]
             handle.write("%s\n" % ("\t".join(row),))
+
+    # Write StyrKO table
+    with (args.output_folder / "predicted_amplicons.tsv").open("wt") as handle:
+        handle.write("Name\tNth\tSequence\n")
+
+        for row in table:
+            for idx, sequence in enumerate(sorted(row["Predicted Amplicons"])):
+                handle.write("%s\t%s\t%s\n" % (row["Name"], idx + 1, sequence))
 
     return 0
 
