@@ -237,7 +237,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
         log.info("Starting from f %s, r %s, qc %s", *best_pair)
 
     try:
-        with multiprocessing.Pool() as pool:
+        with multiprocessing.Pool(args.threads) as pool:
             for candidate in pool.imap(run_mfeprimer3, candidates):
                 if candidate is None:
                     break
@@ -434,6 +434,12 @@ def parse_args(argv):
     parser.add_argument("fasta", type=Path, help="MFEPrimer3 indexed FASTA file")
     parser.add_argument("table", type=Path)
     parser.add_argument("output_folder", type=Path)
+    parser.add_argument(
+        "--threads",
+        type=lambda value: max(1, int(value)),
+        default=multiprocessing.cpu_count(),
+        help="Number of worker threads used while evaluating candidate primer pairs",
+    )
     parser.add_argument(
         "--max-acceptable-depth",
         type=int,
