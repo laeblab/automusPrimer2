@@ -54,6 +54,65 @@ class TableError(RuntimeError):
     pass
 
 
+class Cas9GuideRNA:
+    @classmethod
+    def forward(cls, sequence):
+        sequence = cls.process(sequence)
+
+        return f"ggaaaggacgaaacacc{sequence}gttttagagctagaaat"
+
+    @classmethod
+    def reverse(cls, sequence):
+        sequence = reverse_complement(cls.process(sequence))
+
+        return f"ctaaaac{sequence}ggtgtttcgtcctttccacaagatat"
+
+    @classmethod
+    def process(cls, sequence):
+        sequence = sequence.upper()
+        assert len(sequence) == 23, repr(sequence)
+        assert sequence.endswith("GG"), repr(sequence)
+
+        sequence = "g" + sequence[1:-3]
+        assert len(sequence) == 20, repr(sequence)
+
+        return sequence
+
+
+class MAD7GuideRNA:
+    @classmethod
+    def forward(cls, sequence):
+        sequence = cls.process(sequence)
+
+        return f"at{sequence}tttttttctagacccagct"
+
+    @classmethod
+    def reverse(cls, sequence):
+        sequence = reverse_complement(cls.process(sequence))
+
+        return f"agaaaaaaa{sequence}atctacaagagt"
+
+    @classmethod
+    def process(cls, sequence):
+        sequence = sequence.upper()
+        assert len(sequence) == 25, repr(sequence)
+        assert sequence.startswith("TTT") or sequence.startswith("CTT"), repr(sequence)
+
+        sequence = sequence[4:]
+        assert len(sequence) == 21, repr(sequence)
+        return sequence
+
+
+class MiSeqPrimer:
+    @classmethod
+    def forward(cls, sequence):
+        return f"tcgtcggcagcgtcagatgtgtataagagacag{sequence}"
+
+    @classmethod
+    def reverse(cls, sequence):
+        return f"gtctcgtgggctcggagatgtgtataagagacag{sequence}"
+
+
 def reverse_complement(seq):
     # Very simple (and inefficient) implementation
     return "".join(COMPLEMENT[nuc] for nuc in seq[::-1])
@@ -537,6 +596,13 @@ def parse_args(argv):
         default="INFO",
         help="Log level for output written to STDERR",
     )
+    parser.add_argument(
+        "--enzyme",
+        type=str.upper,
+        choices=("CAS9", "MAD7"),
+        default="CAS9",
+        help="Create gRNA constructs for the specified enzyme",
+    )
 
     group = parser.add_argument_group("Executables")
     group.add_argument(
@@ -604,34 +670,48 @@ def main(argv):
             if not pick_primers_for_guide_rna(args, fasta, row, used_primers):
                 return 1
 
+    if args.enzyme == "CAS9":
+        enzyme = Cas9GuideRNA
+    elif args.enzyme == "MAD7":
+        enzyme = MAD7GuideRNA
+    else:
+        raise NotImplementedError(f"Unknown enzyme {args.enzyme!r}")
+
     # Write forward gRNA primers (Cas9)
     with (args.output_folder / "plate1_gRNAfwd.csv").open("wt") as handle:
-        template = "%s,%s_gRNAfwd,ggaaaggacgaaacaccg%sgttttagagctagaaat\n"
-
         for pos, row in zip(PLATE_POSITIONS, table):
-            handle.write(template % (pos, row["Safe Name"], row["Sequence"][1:-3]))
+            handle.write(
+                "{},{}_gRNAfwd,{}\n".format(
+                    pos, row["Safe Name"], enzyme.forward(row["Sequence"])
+                )
+            )
 
     # Write reverse gRNA primers (Cas9)
     with (args.output_folder / "plate2_gRNArev.csv").open("wt") as handle:
-        template = "%s,%s_gRNArev,ctaaaac%scggtgtttcgtcctttccacaagatat\n"
-
         for pos, row in zip(PLATE_POSITIONS, table):
-            seq = reverse_complement(row["Sequence"][1:-3])
-            handle.write(template % (pos, row["Safe Name"], seq))
+            handle.write(
+                "{},{}_gRNArev,{}\n".format(
+                    pos, row["Safe Name"], enzyme.reverse(row["Sequence"])
+                )
+            )
 
     # Write forward miSeq primers
     with (args.output_folder / "plate3_miseqfwd.csv").open("wt") as handle:
-        template = "%s,%s_MiSeqfwd,tcgtcggcagcgtcagatgtgtataagagacag%s\n"
-
         for pos, row in zip(PLATE_POSITIONS, table):
-            handle.write(template % (pos, row["Safe Name"], row["Forward Primer"]))
+            handle.write(
+                "{},{}_MiSeqfwd,{}\n".format(
+                    pos, row["Safe Name"], MiSeqPrimer.forward(row["Forward Primer"]),
+                )
+            )
 
     # Write reverse miSeq primers
     with (args.output_folder / "plate4_miseqrev.csv").open("wt") as handle:
-        template = "%s,%s_MiSeqrev,gtctcgtgggctcggagatgtgtataagagacag%s\n"
-
         for pos, row in zip(PLATE_POSITIONS, table):
-            handle.write(template % (pos, row["Safe Name"], row["Reverse Primer"]))
+            handle.write(
+                "{},{}_MiSeqrev,{}\n".format(
+                    pos, row["Safe Name"], MiSeqPrimer.reverse(row["Reverse Primer"]),
+                )
+            )
 
     # Write PCR products
     with (args.output_folder / "targets.fasta").open("wt") as handle:
