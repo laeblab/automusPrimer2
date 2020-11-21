@@ -473,6 +473,9 @@ def pick_primers_for_guide_rna(args, fasta, row, used_primers):
 
     safe_name = row["Safe Name"]
     target_region = fasta.fetch(contig, region_start, region_end)
+    if "N" in target_region.upper():
+        log.error("Uncalled bases in region around %r", name)
+        return False
 
     if not run_primer3(args, safe_name, target_region):
         return False
