@@ -21,6 +21,9 @@ __version_tuple__ = (4, 0, 0)
 __version__ = ".".join(map(str, __version_tuple__))
 
 
+# Don't accept/cache amplicons if there are more than 3 for a pair of primers
+MAX_AMPLICONS = 3
+
 REQUIRED_HEADERS = (
     "Name",
     "Contig",
@@ -368,6 +371,8 @@ def find_best_primer_pairs(args, name, primer_pairs):
                 rev_primer = candidate["rev_primer"]
                 results = candidate["qc"]
                 amplicons = candidate["amplicons"]
+                if len(amplicons) > MAX_AMPLICONS:
+                    amplicons = "N" * len(amplicons)
 
                 cache[(fwd_primer, rev_primer)] = {
                     "qc": results,
@@ -390,6 +395,9 @@ def find_best_primer_pairs(args, name, primer_pairs):
 
         if best_pair is None:
             log.error("No primer pairs found")
+            return None
+        elif best_qc > [MAX_AMPLICONS, 0, 0]:
+            log.error("Best primer pair produces too many amplicons %r", best_qc)
             return None
 
         log.warning("Found primer-pair QC %s", best_qc)
