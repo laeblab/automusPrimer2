@@ -154,6 +154,7 @@ def run_command(log, label, command, cwd=None):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        start_new_session=True,
         cwd=cwd,
     )
 
