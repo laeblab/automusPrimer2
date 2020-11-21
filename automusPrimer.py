@@ -231,12 +231,20 @@ def run_and_collect_mfeprimer3_amplicons(log, args, fastapath, outpath):
     log_output(log.debug, "[mfeprimer3] ", stdout)
     log_output(log.error, "[mfeprimer3] ", stderr)
 
-    if process.returncode:
+    if process.wait():
         log.error("Failed to run mfeprimer3 (returncode = %i)", process.returncode)
-        None
+        return None
 
     with (outpath / "out.json").open() as handle:
         data = json.load(handle)
+
+    # This seems to happen when mfeprimer3 hits memory limits
+    if data["AmpList"] is None:
+        log.error(
+            "mfeprimer3 did not produce amplicon list (returncode = %i)",
+            process.returncode,
+        )
+        return None
 
     # GuideRNAs may target duplicated regions / regions with alternative scaffolds;
     # in that case we do not wish to exclude primer-pairs that amplify both regions.
