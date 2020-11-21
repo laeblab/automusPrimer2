@@ -254,7 +254,7 @@ def run_and_collect_mfeprimer3_amplicons(log, args, fastapath, outpath):
     for amplicon in data["AmpList"]:
         amplicons.add(amplicon["P"]["Seq"]["Seq"].upper())
 
-    return frozenset(amplicons)
+    return tuple(amplicons)
 
 
 def run_mfeprimer3(params):
@@ -284,51 +284,27 @@ def run_mfeprimer3(params):
             log, [args.mfeprimer3, "hairpin", "--in", fastapath], RE_NUM_HAIRPINS,
         )
 
-    candidate["qc"] = (len(amplicons), dimers, hairpins)
+    candidate["qc"] = [len(amplicons), dimers, hairpins]
     candidate["amplicons"] = amplicons
 
     return candidate
 
 
 def write_mfe3primer_cache(args, name, cache):
-    filepath = args.output_folder / "mfeprimer3" / f"{name}.tsv"
+    filepath = args.output_folder / "mfeprimer3" / f"{name}.json"
 
     with filepath.open("wt") as handle:
-        header = [
-            "Forward Primer",
-            "Reverse Primer",
-            "Dimers",
-            "Hairpins",
-            "Amplicons",
-        ]
-
-        handle.write("\t".join(header) + "\n")
-        for (fwd, rev), it in cache.items():
-            prod, dimers, hairp = it["qc"]
-            amplicons = it["amplicons"]
-            assert len(amplicons) == prod
-
-            handle.write(
-                "%s\t%s\t%s\t%s\t%s\n" % (fwd, rev, dimers, hairp, ";".join(amplicons))
-            )
+        json.dump(list(cache.items()), handle)
 
 
 def read_mfe3primer_cache(args, name):
     cache = collections.OrderedDict()
-    filepath = args.output_folder / "mfeprimer3" / f"{name}.tsv"
+    filepath = args.output_folder / "mfeprimer3" / f"{name}.json"
     filepath.parent.mkdir(parents=True, exist_ok=True)
     if filepath.exists():
-        for row in read_table(filepath):
-            forward_primer = row["Forward Primer"].upper()
-            reverse_primer = row["Reverse Primer"].upper()
-            amplicons = frozenset(row["Amplicons"].split(";"))
-            dimers = int(row["Dimers"])
-            hairpins = int(row["Hairpins"])
-
-            cache[(forward_primer, reverse_primer)] = {
-                "qc": (len(amplicons), dimers, hairpins),
-                "amplicons": amplicons,
-            }
+        with filepath.open("rt") as handle:
+            for key, values in json.load(handle):
+                cache[tuple(key)] = values
 
     return cache
 
@@ -343,7 +319,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
     max_depth = min(n_fwd_primers + n_rev_primers - 1, args.max_acceptable_depth)
 
     best_pair = None
-    best_qc = (float("inf"), float("inf"), float("inf"))
+    best_qc = [float("inf"), float("inf"), float("inf")]
     cache = read_mfe3primer_cache(args, name)
 
     candidates = []
@@ -355,7 +331,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
 
                 cached_qc_and_amps = cache.get((forward_primer, reverse_primer))
                 if cached_qc_and_amps is not None:
-                    if (1, 0, 0) <= cached_qc_and_amps["qc"] < best_qc:
+                    if [1, 0, 0] <= cached_qc_and_amps["qc"] < best_qc:
                         best_qc = cached_qc_and_amps["qc"]
                         best_pair = {
                             "forward": forward_primer,
@@ -376,7 +352,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
                         )
                     )
 
-    if best_qc == (1, 0, 0):
+    if best_qc == [1, 0, 0]:
         log.info("Found cached f %(forward)s, r %(reverse)s, qc %(qc)s" % best_pair)
         return best_pair
     elif best_pair is not None:
@@ -399,7 +375,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
                 }
 
                 log.info("Tested f %s, r %s, qc %s", fwd_primer, rev_primer, results)
-                if (1, 0, 0) <= results < best_qc:
+                if [1, 0, 0] <= results < best_qc:
                     best_pair = {
                         "forward": fwd_primer,
                         "reverse": rev_primer,
@@ -408,7 +384,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
                     }
                     best_qc = results
 
-                if results == (1, 0, 0):
+                if results == [1, 0, 0]:
                     log.info("Found good primer-pair with single PCR product!")
                     return best_pair
 
