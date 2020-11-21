@@ -262,10 +262,7 @@ def run_and_collect_mfeprimer3_amplicons(log, args, fastapath, outpath):
 
 def run_mfeprimer3(params):
     log = logging.getLogger("run_mfeprimer3")
-    args, candidate = params
-
-    forward_primer = candidate["fwd_primer"]
-    reverse_primer = candidate["rev_primer"]
+    args, forward_primer, reverse_primer = params
 
     with tempfile.TemporaryDirectory() as tempdir:
         temppath = Path(tempdir)
@@ -287,10 +284,15 @@ def run_mfeprimer3(params):
             log, [args.mfeprimer3, "hairpin", "--in", fastapath], RE_NUM_HAIRPINS,
         )
 
-    candidate["qc"] = [len(amplicons), dimers, hairpins]
-    candidate["amplicons"] = amplicons
+    if None in (amplicons, dimers, hairpins):
+        return None
 
-    return candidate
+    return {
+        "fwd_primer": forward_primer,
+        "rev_primer": reverse_primer,
+        "qc": [len(amplicons), dimers, hairpins],
+        "amplicons": amplicons,
+    }
 
 
 def write_mfe3primer_cache(args, name, cache):
@@ -312,8 +314,7 @@ def read_mfe3primer_cache(args, name):
     return cache
 
 
-def find_best_primer_pairs(args, name, primer_pairs):
-    log = logging.getLogger("find_best_primer_pairs")
+def primer_permutations(args, primer_pairs):
     fwd_primers, rev_primers = primer_pairs
 
     n_fwd_primers = len(fwd_primers)
@@ -321,39 +322,35 @@ def find_best_primer_pairs(args, name, primer_pairs):
 
     max_depth = min(n_fwd_primers + n_rev_primers - 1, args.max_acceptable_depth)
 
-    best_pair = None
-    best_qc = [float("inf"), float("inf"), float("inf")]
-    cache = read_mfe3primer_cache(args, name)
-
-    candidates = []
     for depth in range(max_depth):
         for fwd_depth in range(depth + 1):
             if fwd_depth < n_fwd_primers and depth - fwd_depth < n_rev_primers:
                 forward_primer = fwd_primers[fwd_depth]
                 reverse_primer = rev_primers[depth - fwd_depth]
 
-                cached_qc_and_amps = cache.get((forward_primer, reverse_primer))
-                if cached_qc_and_amps is not None:
-                    if [1, 0, 0] <= cached_qc_and_amps["qc"] < best_qc:
-                        best_qc = cached_qc_and_amps["qc"]
-                        best_pair = {
-                            "forward": forward_primer,
-                            "reverse": reverse_primer,
-                            "qc": cached_qc_and_amps["qc"],
-                            "amplicons": cached_qc_and_amps["amplicons"],
-                        }
+                yield forward_primer, reverse_primer
 
-                if (forward_primer, reverse_primer) not in cache:
-                    candidates.append(
-                        (
-                            args,
-                            {
-                                "fwd_primer": forward_primer,
-                                "rev_primer": reverse_primer,
-                                "qc": None,
-                            },
-                        )
-                    )
+
+def find_best_primer_pairs(args, name, primer_pairs):
+    log = logging.getLogger("find_best_primer_pairs")
+    cache = read_mfe3primer_cache(args, name)
+    candidates = []
+
+    best_pair = None
+    best_qc = [float("inf"), float("inf"), float("inf")]
+    for forward_primer, reverse_primer in primer_permutations(args, primer_pairs):
+        cached = cache.get((forward_primer, reverse_primer))
+        if cached is not None:
+            if [1, 0, 0] <= cached["qc"] < best_qc:
+                best_qc = cached["qc"]
+                best_pair = {
+                    "forward": forward_primer,
+                    "reverse": reverse_primer,
+                    "qc": cached["qc"],
+                    "amplicons": cached["amplicons"],
+                }
+        else:
+            candidates.append((args, forward_primer, reverse_primer))
 
     if best_qc == [1, 0, 0]:
         log.info("Found cached f %(forward)s, r %(reverse)s, qc %(qc)s" % best_pair)
