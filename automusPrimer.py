@@ -2,6 +2,7 @@
 # -*- coding: utf8 -*-
 import argparse
 import collections
+import hashlib
 import json
 import logging
 import multiprocessing
@@ -120,6 +121,19 @@ def reverse_complement(seq):
 
 def safe_guide_rna_name(name):
     return "".join(char for char in name if char.isalnum() or char in " ._")
+
+
+def hash_sequence(sequence):
+    sequence = sequence.upper()
+
+    bad_bases = set(sequence) - set("ACGT")
+    if bad_bases:
+        return None
+
+    hasher = hashlib.new("md5")
+    hasher.update(sequence.encode("utf8"))
+
+    return hasher.hexdigest().upper()
 
 
 def log_output(log, label, data):
@@ -400,7 +414,7 @@ def find_best_primer_pairs(args, name, primer_pairs):
         write_mfe3primer_cache(args, name, cache)
 
 
-def parse_primer3(args, name):
+def parse_primer3(args, sequence):
     def parse_primer3_file(handle):
         result = []
         for line in handle:
@@ -409,6 +423,7 @@ def parse_primer3(args, name):
                 result.append(fields[1].upper())
         return result
 
+    name = hash_sequence(sequence)
     primer3_folder = args.output_folder / "primer3"
 
     with (primer3_folder / f"{name}.for").open("rt") as handle:
@@ -420,12 +435,24 @@ def parse_primer3(args, name):
     return (forward_primers, reverse_primers)
 
 
-def run_primer3(args, name, sequence):
+def run_primer3(args, seqname, sequence):
+    log = logging.getLogger("run_primer3")
+
+    name = hash_sequence(sequence)
+    if name is None:
+        log.error("Invalid sequence for %r; contains non-ACGT bases!", seqname)
+        return False
+
     primer3_folder = args.output_folder / "primer3"
     primer3_folder.mkdir(parents=True, exist_ok=True)
-    primer3_settings = primer3_folder / "settings"
+    primer3_settings = primer3_folder / f"{name}.settings"
 
-    log = logging.getLogger("run_primer3")
+    output_for = primer3_settings.with_suffix(".for")
+    output_rev = primer3_settings.with_suffix(".rev")
+    if output_for.exists() and output_rev.exists():
+        log.info("Primer3 results for %s already exist (%s)", seqname, name)
+        return True
+
     log.info("Writing primer3 settings to '%s'", primer3_settings)
     with primer3_settings.open("wt") as handle:
         settings = [
@@ -442,7 +469,7 @@ def run_primer3(args, name, sequence):
         for line in settings:
             print(line, file=handle)
 
-    command = [args.primer3, "settings"]
+    command = [args.primer3, primer3_settings.name]
 
     return run_command(log, "primer3", command, cwd=primer3_folder)
 
@@ -480,7 +507,7 @@ def pick_primers_for_guide_rna(args, fasta, row, used_primers):
     if not run_primer3(args, safe_name, target_region):
         return False
 
-    suggested_primer_pairs = parse_primer3(args, safe_name)
+    suggested_primer_pairs = parse_primer3(args, target_region)
     if suggested_primer_pairs is None:
         return False
 
