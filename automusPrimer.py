@@ -254,9 +254,24 @@ def run_and_collect_mfeprimer3_amplicons(log, args, fastapath, outpath):
     # in that case we do not wish to exclude primer-pairs that amplify both regions.
     # TODO: Handle very similar (identical length) amplicons
     # TODO: Prioritize globally unique amplicons if possible
+    n_invalid = 0
     amplicons = set()
     for amplicon in data["AmpList"]:
-        amplicons.add(amplicon["P"]["Seq"]["Seq"].upper())
+        orientation = (amplicon["F"]["Seq"]["ID"], amplicon["R"]["Seq"]["ID"])
+
+        sequence = amplicon["P"]["Seq"]["Seq"].upper()
+        if orientation == ("forward", "reverse"):
+            amplicons.add(sequence)
+        elif orientation == ("reverse", "forward"):
+            amplicons.add(reverse_complement(sequence))
+        else:
+            n_invalid += 1
+
+    log.debug(
+        "found %i unique PCR products and skipped %i impossible products",
+        len(amplicons),
+        n_invalid,
+    )
 
     return tuple(amplicons)
 
