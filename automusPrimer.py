@@ -28,7 +28,7 @@ REQUIRED_HEADERS = (
     "Name",
     "Contig",
     "Sequence",
-    "Position",
+    "Cutsite",
 )
 
 ADDED_HEADERS = ("Forward Primer", "Reverse Primer", "Quality Control", "PCR Sequence")
@@ -482,7 +482,7 @@ def run_primer3(args, seqname, sequence):
 def pick_primers_for_guide_rna(args, fasta, row, used_primers):
     name = row["Name"]
     contig = row["Contig"]
-    position = int(row["Position"])
+    position = int(row["Cutsite"])
 
     log = logging.getLogger("pick_primers_for_guide_rna")
     log.info("Finding primer for gRNA %r at %s:%s", name, contig, position)
