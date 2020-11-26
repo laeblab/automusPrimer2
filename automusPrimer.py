@@ -34,7 +34,7 @@ REQUIRED_HEADERS = (
 ADDED_HEADERS = ("Forward Primer", "Reverse Primer", "Quality Control", "PCR Sequence")
 
 PLATE_POSITIONS = tuple(
-    f"{row}{column}" for column in range(1, 17) for row in "ABCDEFGH"
+    f"{row}{column}" for column in range(1, 13) for row in "ABCDEFGH"
 )
 
 COMPLEMENT = {
